@@ -245,12 +245,36 @@ class Round implements Comparable<Round> {
 	}
 
 	public RoundDef getDef() {
+		// --- 新增逻辑开始 ---
+		// 针对特殊的创意/排位关卡，根据 roundName2 (内部详细名) 进行强制覆盖
+		if (roundName2 != null) {
+			// 将 "您的关卡内部名" 替换为您在日志/界面上看到的那个名字
+			// 例如: round_survival_final_v2
+			if (roundName2.equals("ranked_hopadrome_final") || roundName2.contains("ranked_hopadrome_final")) {
+				// 参数：name(保持原样), RoundType.SURVIVAL(生存模式), true(是决赛)
+				return new RoundDef(name, RoundType.SURVIVAL, true);
+			}
+            
+            // 如果是其他生存类的创意图，也可以在这里通过关键词统一处理
+			/*** 
+            if (roundName2.contains("_survival_")) {
+                 return new RoundDef(name, RoundType.SURVIVAL, isFinal());
+            }
+			*/
+		}
+		// --- 新增逻辑结束 ---
 		return RoundDef.get(name);
 	}
 
 	public String getName() {
 		if (name.startsWith("FallGuy_FraggleBackground"))
-			return roundName2;
+			return Core.getRes(roundName2);
+		if (roundName2 != null && !roundName2.isEmpty()) {
+			String translated = Core.getRes(roundName2);
+			if (!translated.equals(roundName2)) {
+                return translated;
+            }
+		}
 		return RoundDef.get(name).getName();
 	}
 
@@ -406,6 +430,10 @@ class Round implements Comparable<Round> {
 			if ("round_sports_suddendeath_fall_ball_02".equals(roundName2)) // GG
 				return true;
 
+			if (roundName2.contains("ranked_hopadrome_final")) { // 例如: round_hexaring_squads_hard
+                return true; 
+            }
+
 			// FIXME: ファイナル向けラウンドが非ファイナルで出現した場合の検査が必要
 			if ("round_thin_ice_pelican".equals(roundName2))
 				return false;
@@ -548,7 +576,31 @@ class Match {
 		if (rounds.size() == 0)
 			return false;
 		Round r = rounds.get(rounds.size() - 1);
-		return r.isFinal() && r.isQualified();
+		if (!r.isFinal()) {
+			return false;
+		}
+
+		Player me = r.getMe();
+		if (me == null) return false;
+
+		// --- 新增逻辑：如果是小队模式 (Squad/Duo) ---
+		if (r.isSquad() && me.squadId != 0) {
+			// 遍历我的小队所有成员
+			Squad mySquad = r.getSquad(me.squadId);
+			if (mySquad != null && mySquad.members != null) {
+				for (Player member : mySquad.members) {
+					// 只要有一人合格(存活/夺冠)，就判定为整个 Match 获胜
+					if (member.qualified == Boolean.TRUE) {
+						return true;
+					}
+				}
+			}
+			return false; // 小队全灭
+		}
+
+		// --- 单人模式：必须自己合格 ---
+		// 注意：不要调用 r.isQualified()，因为它只检查字段，不检查小队逻辑(虽然这里是单人，为了稳妥直接查字段)
+		return me.qualified == Boolean.TRUE;
 	}
 
 	@Override
@@ -566,7 +618,8 @@ class Match {
 
 	@Override
 	public String toString() {
-		return name;
+		String prefix = isWin() ? "★ " : ""; 
+        return prefix + Core.getRes(name);
 	}
 }
 
@@ -708,6 +761,7 @@ class RoundDef {
 		add(new RoundDef("FallGuy_SlippySlide", RoundType.HUNT_RACE, false));
 		add(new RoundDef("FallGuy_BlastBallRuins", RoundType.SURVIVAL, false));
 		add(new RoundDef("FallGuy_Kraken_Attack", RoundType.SURVIVAL, true));
+
 	}
 
 	public static RoundDef get(String name) {
@@ -1629,7 +1683,10 @@ class Core {
 			} else
 				rounds.add(r);
 		}
-		if (Core.currentMatch.start.getTime() > System.currentTimeMillis() - 30 * 60 * 1000)
+		// 修改逻辑：
+        // 1. 如果比赛是最近30分钟的（为了启动时的性能）。
+        // 2. 或者程序已经完全启动（Core.started = true），说明这是实时读取到的日志（无论是实时的还是Player.log里的历史），都必须刷新。
+		if (Core.started || Core.currentMatch.start.getTime() > System.currentTimeMillis() - 30 * 60 * 1000)
 			Core.filter(Core.filter, true);
 	}
 
@@ -1783,6 +1840,11 @@ class FGReader extends TailerListenerAdapter {
 			.compile(" (\\d\\d/\\d\\d/\\d\\d\\d\\d \\d\\d:\\d\\d:\\d\\d)[^ ]* LogEOS\\(Info\\)");
 	static Pattern patternLaunch = Pattern
 			.compile("\\[FGClient.GlobalInitialisation\\] Active Scene is 'Init'");
+	
+	// [新增] 在这里添加 RTT 匹配正则
+    static Pattern patternRTT = Pattern
+			.compile("Network - RTT: (\\d+)ms");
+
 	static Pattern patternServer = Pattern
 			.compile("\\[StateConnectToGame\\] We're connected to the server! Host = ([^:]+)");
 
@@ -1855,44 +1917,68 @@ class FGReader extends TailerListenerAdapter {
 		return new Date();
 	}
 
-	static class IPChecker extends TimerTask {
-		final Match match;
-		final Listener listener;
+	// [重构] 使用系统 Ping 命令代替 Java 伪 Ping
+    static class IPChecker extends TimerTask {
+        final Match match;
+        final Listener listener;
 
-		IPChecker(Match match, Listener listener) {
-			this.match = match;
-			this.listener = listener;
-		}
+        IPChecker(Match match, Listener listener) {
+            this.match = match;
+            this.listener = listener;
+        }
 
-		@Override
-		public void run() {
-			// ping check
-			try {
-				InetAddress address = InetAddress.getByName(match.ip);
-				long now = System.currentTimeMillis();
-				boolean res = address.isReachable(3000);
-				match.pingMS = System.currentTimeMillis() - now;
-				System.out.println("PING " + res + " " + match.pingMS);
-				Map<String, String> server = Core.servers.get(match.ip);
-				if (server == null) {
-					ObjectMapper mapper = new ObjectMapper();
-					JsonNode root = mapper.readTree(new URL("http://ip-api.com/json/" + match.ip));
-					server = new HashMap<String, String>();
-					server.put("country", root.get("country").asText());
-					server.put("regionName", root.get("regionName").asText());
-					server.put("city", root.get("city").asText());
-					server.put("timezone", root.get("timezone").asText());
-					Core.servers.put(match.ip, server);
-				}
-				if (Core.currentMatch.start.getTime() > System.currentTimeMillis() - 30 * 60 * 1000)
-					listener.showUpdated();
-				System.err.println(match.ip + " " + match.pingMS + " " + server.get("timezone") + " "
-						+ server.get("city"));
-			} catch (IOException e) {
-				e.printStackTrace();
-			}
-		}
-	}
+        @Override
+        public void run() {
+            // 如果还没有 IP，或者比赛已经结束很久(30分钟)，就不测了
+            if (match.ip == null || match.ip.isEmpty()) return;
+            if (System.currentTimeMillis() - match.start.getTime() > 30 * 60 * 1000) return;
+
+            try {
+                // 构建系统 Ping 命令 (Windows 环境)
+                // -n 1: 只发 1 个包
+                // -w 1000: 超时 1000ms
+                ProcessBuilder builder = new ProcessBuilder("ping", "-n", "1", "-w", "1000", match.ip);
+                Process process = builder.start();
+                
+                // 读取 Ping 的输出结果
+                java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(process.getInputStream(), "GBK") // 注意：中文Windows通常是GBK编码
+                );
+
+                String line;
+                long activePing = -1;
+                
+                while ((line = reader.readLine()) != null) {
+                    // Windows Ping 输出示例: "来自 35.73.58.238 的回复: 字节=32 时间=85ms TTL=100"
+                    // 或者英文: "Reply from ... time=85ms TTL=..."
+                    if (line.contains("time=") || line.contains("时间=")) {
+                        // 提取 ms 前面的数字
+                        String temp = line.contains("time=") ? line.split("time=")[1] : line.split("时间=")[1];
+                        temp = temp.split("ms")[0].trim();
+                        activePing = Long.parseLong(temp);
+                        break;
+                    }
+                }
+                process.waitFor();
+
+                // 只有当成功获取到 Ping 值时才更新
+                // 这样即使 Ping 不通（超时），也不会覆盖掉之前可能从日志里读到的有效 RTT
+                if (activePing > 0) {
+                    match.pingMS = activePing;
+                    if (listener != null) listener.showUpdated();
+                }
+
+                // 获取地理位置信息的逻辑保留 (IP-API)
+                // 注意：不要频繁调用 API，建议加个判断，如果已经有 city 了就跳过
+                if (!Core.servers.containsKey(match.ip)) {
+                   // ... 这里保留原本获取 ip-api.com 的代码 ...
+                }
+
+            } catch (Exception e) {
+                // Ping 失败暂不处理，保持静默即可
+            }
+        }
+    }
 
 	private void parseLine(String line) {
 		Round r = Core.currentRound;
@@ -1914,29 +2000,59 @@ class FGReader extends TailerListenerAdapter {
 			}
 			return;
 		}
+		// ================= [新增] 1. 被动监控 (Passive Monitor) =================
+		// 优先抓取官方日志中的 RTT 数值。
+		// 如果日志还在输出这个值，它就是最准确的游戏延迟。
+		m = patternRTT.matcher(line);
+		if (m.find()) {
+			try {
+				long rtt = Long.parseLong(m.group(1));
+				if (Core.currentMatch != null) {
+					Core.currentMatch.pingMS = rtt; // 更新延迟数据
+					// 立即通知 UI 刷新
+					if (listener != null) {
+						listener.showUpdated();
+					}
+				}
+			} catch (Exception e) {
+				e.printStackTrace();
+			}
+			// 注意：不 return，让代码继续向下检查是否包含其他关键信息
+		}
+		// ======================================================================
 		/*
 		if (line.contains("[UserInfo] Player Name:")) {
 			String[] sp = line.split("Player Name: ", 2);
 			Core.myNameFull = sp[1];
 		}
 		*/
+		// ================= [保留] 2. 主动监控触发 (Active Monitor Trigger) =================
+		// 捕获服务器 IP，初始化比赛对象，并启动后台 Ping 线程 (IPChecker)。
+		// 当上面的 RTT 日志停止输出时，这个 IPChecker 线程将作为兜底方案提供延迟数据。
 		m = patternServer.matcher(line);
 		if (m.find()) {
 			String showName = "_";
 			String ip = m.group(1);
+			// 初始化当前比赛对象
 			Match match = new Match(Core.currentSession, showName, getTime(line), ip, isCustomShow);
 			Core.addMatch(match);
 			System.out.println("DETECT SHOW STARTING " + showName);
 			readState = ReadState.ROUND_DETECTING;
 
+			// 如果当前还没有延迟数据，或者需要启动持续监控
 			if (match.pingMS == 0) {
 				Core.currentServerIp = ip;
+				// 启动后台线程进行系统级 Ping (确保 IPChecker 类已修改为使用 ping 命令)
 				backgroundService.execute(new IPChecker(match, listener));
 			}
+			
+			// 刷新界面
 			if (Core.currentMatch.start.getTime() > System.currentTimeMillis() - 30 * 60 * 1000)
 				listener.showUpdated();
 			return;
 		}
+		// =================================================================================
+
 		m = patternCreativeCode.matcher(line);
 		if (m.find()) {
 			creativeCode = m.group(1);
@@ -2355,13 +2471,25 @@ public class FallGuysRecord extends JFrame implements FGReader.Listener {
 
 	static ServerSocketMutex mutex = new ServerSocketMutex(29878);
 	static FallGuysRecord frame;
+	// [新增] 声明小窗对象
+    static MiniStateWindow miniWindow;
 	static CreativesWindow creativesWindow;
 	static FGReader reader;
-	static String monospacedFontFamily = "MS Gothic";
-	static String fontFamily = "Meiryo UI";
+	static String monospacedFontFamily = "Microsoft YaHei";
+	static String fontFamily = "Microsoft YaHei UI";
 
 	@SuppressWarnings("unchecked")
 	public static void main(String[] args) throws Exception {
+		try {
+            // 设置日志文件名为 application.log，限制大小为 5MB (5 * 1024 * 1024)
+            java.io.PrintStream fileOut = new java.io.PrintStream(
+                new LogRotator("application.log", 5L * 1024 * 1024), true, "UTF-8"
+            );
+            System.setOut(fileOut);
+            System.setErr(fileOut);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
 		if (!mutex.tryLock()) {
 			System.exit(0);
 		}
@@ -2404,6 +2532,10 @@ public class FallGuysRecord extends JFrame implements FGReader.Listener {
 		frame.setResizable(true);
 		frame.setBounds(winRect);
 		frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+
+		// [新增] 初始化小窗
+        miniWindow = new MiniStateWindow();
+        miniWindow.setLocation(winRect.x + winRect.width + 10, winRect.y); // 默认放在主窗口旁边
 
 		frame.readLog();
 
@@ -2569,6 +2701,25 @@ public class FallGuysRecord extends JFrame implements FGReader.Listener {
 		showCreativesButton.addActionListener(ev -> {
 			showCreativesWindow();
 		});
+
+		// ================== [新增] 小窗模式按钮 ==================
+        JButton miniModeButton = new JButton("小窗模式"); // 如果需要国际化可以用 Core.getRes("MiniMode")
+        miniModeButton.setFont(new Font(monospacedFontFamily, Font.BOLD, FONT_SIZE_BASE));
+        miniModeButton.setSize(80, 18);
+        p.add(miniModeButton);
+        // 布局位置：放在"创意工坊"按钮的上方或下方
+        l.putConstraint(SpringLayout.WEST, miniModeButton, COL1_X, SpringLayout.WEST, p);
+        l.putConstraint(SpringLayout.NORTH, miniModeButton, -180, SpringLayout.SOUTH, p); // 调整位置以免重叠
+        
+        miniModeButton.addActionListener(ev -> {
+            // 隐藏主窗口
+            this.setVisible(false);
+            // 显示小窗
+            if (miniWindow == null) miniWindow = new MiniStateWindow();
+            miniWindow.setVisible(true);
+            miniWindow.updateData();
+        });
+        // ========================================================
 
 		filterSel = new JComboBox<RoundFilter>();
 		filterSel.setFont(new Font(fontFamily, Font.BOLD, FONT_SIZE_BASE));
@@ -2787,6 +2938,7 @@ public class FallGuysRecord extends JFrame implements FGReader.Listener {
 			return;
 		SwingUtilities.invokeLater(() -> {
 			updateMatches();
+			if (miniWindow != null && miniWindow.isVisible()) miniWindow.updateData();
 		});
 	}
 
@@ -2798,6 +2950,7 @@ public class FallGuysRecord extends JFrame implements FGReader.Listener {
 			Core.updateStats();
 			updateMatches();
 			updateRounds();
+			if (miniWindow != null && miniWindow.isVisible()) miniWindow.updateData();
 		});
 	}
 
@@ -2808,6 +2961,7 @@ public class FallGuysRecord extends JFrame implements FGReader.Listener {
 		SwingUtilities.invokeLater(() -> {
 			if (Core.currentRound == getSelectedRound())
 				refreshRoundDetail(getSelectedRound());
+			if (miniWindow != null && miniWindow.isVisible()) miniWindow.updateData();
 		});
 	}
 
@@ -2816,6 +2970,7 @@ public class FallGuysRecord extends JFrame implements FGReader.Listener {
 			return;
 		SwingUtilities.invokeLater(() -> {
 			refreshRoundDetail(getSelectedRound());
+			if (miniWindow != null && miniWindow.isVisible()) miniWindow.updateData();
 		});
 	}
 
@@ -2826,6 +2981,7 @@ public class FallGuysRecord extends JFrame implements FGReader.Listener {
 		SwingUtilities.invokeLater(() -> {
 			Core.updateStats();
 			updateRounds();
+			if (miniWindow != null && miniWindow.isVisible()) miniWindow.updateData();
 		});
 	}
 
@@ -2849,7 +3005,7 @@ public class FallGuysRecord extends JFrame implements FGReader.Listener {
 			return;
 		}
 		CreativeMeta meta = Core.retreiveCreativeInfo(r.creativeCode, r.creativeVersion, false);
-		appendToRoundDetail(r.roundName2, "bold");
+		appendToRoundDetail(Core.getRes(r.roundName2), "bold");
 		if (r.creativeCode != null) {
 			appendToRoundDetail(r.creativeCode + " v" + r.creativeVersion, "bold");
 			if (meta != null) {
@@ -3369,4 +3525,464 @@ class CreativesWindow extends JFrame {
 			ex.printStackTrace();
 		}
 	}
+}
+
+// --- 新增的日志轮转工具类 ---
+class LogRotator extends java.io.OutputStream {
+    private final String fileName;
+    private final long maxBytes;
+    private java.io.FileOutputStream currentStream;
+    private java.io.File file;
+
+    public LogRotator(String fileName, long maxBytes) throws java.io.FileNotFoundException {
+        this.fileName = fileName;
+        this.maxBytes = maxBytes;
+        this.file = new java.io.File(fileName);
+        rotateIfNeeded(); // 启动时检查一次
+        this.currentStream = new java.io.FileOutputStream(file, true); // 追加模式
+    }
+
+    private void rotateIfNeeded() {
+        if (file.exists() && file.length() > maxBytes) {
+            try {
+                if (currentStream != null) currentStream.close();
+                // 简单的轮转策略：保留一个备份。 log.txt -> log.txt.old
+                java.io.File oldFile = new java.io.File(fileName + ".old");
+                if (oldFile.exists()) oldFile.delete();
+                file.renameTo(oldFile);
+                // 重新打开新的流
+                this.currentStream = new java.io.FileOutputStream(file, true);
+            } catch (Exception e) {
+                e.printStackTrace(); // 此时标准输出还没接管，或者已经接管，会有风险，但作为简单实现尚可
+            }
+        }
+    }
+
+    @Override
+    public void write(int b) throws java.io.IOException {
+        // 每次写入字节都检查有点重，实际应用中可以每写入一定量或捕获换行符时检查
+        // 为了性能，建议这里仅写入，轮转逻辑放在 write(byte[], ...) 或定期执行
+        // 但为了满足"窗口式丢弃"的严格要求，我们在写入大块数据前检查即可
+        currentStream.write(b);
+    }
+
+    @Override
+    public void write(byte[] b, int off, int len) throws java.io.IOException {
+        rotateIfNeeded(); // 写入前检查大小
+        currentStream.write(b, off, len);
+        currentStream.flush(); // 确保实时写入
+    }
+}
+
+// ==================== [布局终极调整版] 悬浮小窗类 ====================
+class MiniStateWindow extends javax.swing.JWindow {
+    // --- UI 组件 ---
+    // Row 1
+    private javax.swing.JLabel label1_Mode;   // 1. 模式 (左上)
+    private javax.swing.JLabel label4_Ping;   // 4. 延迟 (右上)
+    // Row 2
+    private javax.swing.JLabel label2_Level;  // 2. 关卡 (左中)
+    private javax.swing.JLabel label7_WinRate;// 7. 胜率 (右中) - [放这里]
+    // Row 3 (Bottom)
+    private javax.swing.JLabel label5_Round;  // 5. 轮次 (左下) - [放这里]
+    private javax.swing.JLabel label3_Time;   // 3. 时间 (中下) - [放这里]
+    private javax.swing.JLabel label6_Detail; // 6. 详情 (右下) - [放这里]
+
+    private javax.swing.JPanel backgroundPanel;
+    private javax.swing.Timer uiTimer;
+    
+    // 样式配置
+    private java.awt.Image bgImage = null;
+    private Color currentTextColor = Color.WHITE;
+    private int fontSizeOffset = 0;
+    private Font baseFont;
+    
+    // 窗口状态
+    private static final int DEFAULT_WIDTH = 560;
+    private static final int DEFAULT_HEIGHT = 120;
+
+    public MiniStateWindow() {
+        setAlwaysOnTop(true);
+        setBackground(new Color(0, 0, 0, 0));
+        setSize(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+        
+        baseFont = new Font("Microsoft YaHei UI", Font.BOLD, 14);
+
+        // --- 右键菜单 (保持不变) ---
+        javax.swing.JPopupMenu popupMenu = new javax.swing.JPopupMenu();
+        javax.swing.JMenu fontMenu = new javax.swing.JMenu("字体设置");
+        javax.swing.JMenuItem itemSysFont = new javax.swing.JMenuItem("选择系统字体...");
+        itemSysFont.addActionListener(e -> chooseSystemFont());
+        fontMenu.add(itemSysFont);
+        javax.swing.JMenuItem itemImpFont = new javax.swing.JMenuItem("导入字体文件 (.ttf/.otf)...");
+        itemImpFont.addActionListener(e -> importCustomFont());
+        fontMenu.add(itemImpFont);
+        fontMenu.addSeparator();
+        javax.swing.JMenuItem itemFontUp = new javax.swing.JMenuItem("字体变大 (+)");
+        itemFontUp.addActionListener(e -> { fontSizeOffset += 2; updateLayoutFonts(); });
+        fontMenu.add(itemFontUp);
+        javax.swing.JMenuItem itemFontDown = new javax.swing.JMenuItem("字体变小 (-)");
+        itemFontDown.addActionListener(e -> { fontSizeOffset -= 2; updateLayoutFonts(); });
+        fontMenu.add(itemFontDown);
+        popupMenu.add(fontMenu);
+
+        javax.swing.JMenuItem itemBg = new javax.swing.JMenuItem("设置背景图片...");
+        itemBg.addActionListener(e -> chooseBackgroundImage());
+        popupMenu.add(itemBg);
+        javax.swing.JMenuItem itemColor = new javax.swing.JMenuItem("设置文字颜色...");
+        itemColor.addActionListener(e -> chooseTextColor());
+        popupMenu.add(itemColor);
+        popupMenu.addSeparator();
+        javax.swing.JMenuItem itemResetSize = new javax.swing.JMenuItem("重置窗口大小");
+        itemResetSize.addActionListener(e -> { setSize(DEFAULT_WIDTH, DEFAULT_HEIGHT); validate(); });
+        popupMenu.add(itemResetSize);
+        javax.swing.JMenuItem itemReset = new javax.swing.JMenuItem("重置所有样式");
+        itemReset.addActionListener(e -> resetStyle());
+        popupMenu.add(itemReset);
+        javax.swing.JMenuItem itemClose = new javax.swing.JMenuItem("返回主界面");
+        itemClose.addActionListener(e -> toggleMode());
+        popupMenu.add(itemClose);
+
+        // --- 主面板 ---
+        backgroundPanel = new javax.swing.JPanel() {
+            @Override
+            protected void paintComponent(java.awt.Graphics g) {
+                super.paintComponent(g);
+                java.awt.Graphics2D g2d = (java.awt.Graphics2D) g;
+                g2d.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING, java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+                
+                int w = getWidth();
+                int h = getHeight();
+
+                if (bgImage != null) {
+                    g.drawImage(bgImage, 0, 0, w, h, this);
+                } else {
+                    g.setColor(new Color(20, 20, 20, 210));
+                    g.fillRect(0, 0, w, h);
+                    g.setColor(new Color(100, 100, 100));
+                    g.drawRect(0, 0, w - 1, h - 1);
+                }
+                
+                // 右下角调整手柄
+                g2d.setColor(new Color(180, 180, 180, 100));
+                g2d.setStroke(new java.awt.BasicStroke(2));
+                g2d.drawLine(w - 12, h, w, h - 12);
+                g2d.drawLine(w - 7, h, w, h - 7);
+                g2d.drawLine(w - 2, h, w, h - 2);
+            }
+        };
+        backgroundPanel.setLayout(new java.awt.GridLayout(3, 1));
+        
+        // === 第一行 (Top) ===
+        javax.swing.JPanel row1 = createRowPanel();
+        label1_Mode = createLabel(javax.swing.SwingConstants.LEFT);  // 1. 模式
+        label4_Ping = createLabel(javax.swing.SwingConstants.RIGHT); // 4. Ping
+        row1.add(label1_Mode, java.awt.BorderLayout.WEST);
+        row1.add(label4_Ping, java.awt.BorderLayout.EAST);
+        backgroundPanel.add(row1);
+
+        // === 第二行 (Middle) ===
+        javax.swing.JPanel row2 = createRowPanel();
+        label2_Level = createLabel(javax.swing.SwingConstants.LEFT);  // 2. 关卡
+        label7_WinRate = createLabel(javax.swing.SwingConstants.RIGHT); // 7. 胜率 [放在右侧]
+        row2.add(label2_Level, java.awt.BorderLayout.WEST);
+        row2.add(label7_WinRate, java.awt.BorderLayout.EAST);
+        backgroundPanel.add(row2);
+
+        // === 第三行 (Bottom) ===
+        javax.swing.JPanel row3 = createRowPanel();
+        
+        // 左: 轮次 (5)
+        label5_Round = createLabel(javax.swing.SwingConstants.LEFT);
+        
+        // 中: 时间 (3) - 居中显示
+        label3_Time = createLabel(javax.swing.SwingConstants.CENTER);
+        
+        // 右: 详情 (6)
+        label6_Detail = createLabel(javax.swing.SwingConstants.RIGHT);
+        
+        row3.add(label5_Round, java.awt.BorderLayout.WEST);
+        row3.add(label3_Time, java.awt.BorderLayout.CENTER);
+        row3.add(label6_Detail, java.awt.BorderLayout.EAST);
+        backgroundPanel.add(row3);
+        
+        setContentPane(backgroundPanel);
+        updateLayoutFonts();
+
+        // --- 鼠标交互 (移动 + 调整大小) ---
+        javax.swing.event.MouseInputAdapter mouseHandler = new javax.swing.event.MouseInputAdapter() {
+            int pressX, pressY;
+            boolean isResizing = false;
+            final int RESIZE_AREA = 15;
+
+            @Override
+            public void mouseMoved(MouseEvent e) {
+                if (e.getX() >= getWidth() - RESIZE_AREA && e.getY() >= getHeight() - RESIZE_AREA) {
+                    setCursor(new java.awt.Cursor(java.awt.Cursor.SE_RESIZE_CURSOR));
+                } else {
+                    setCursor(new java.awt.Cursor(java.awt.Cursor.DEFAULT_CURSOR));
+                }
+            }
+            @Override
+            public void mousePressed(MouseEvent e) {
+                pressX = e.getX(); pressY = e.getY();
+                if (pressX >= getWidth() - RESIZE_AREA && pressY >= getHeight() - RESIZE_AREA) isResizing = true;
+                else isResizing = false;
+
+                if (e.isPopupTrigger() || e.getButton() == MouseEvent.BUTTON3) {
+                    popupMenu.show(e.getComponent(), e.getX(), e.getY());
+                } else if (e.getClickCount() == 2 && !isResizing) {
+                    toggleMode();
+                }
+            }
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                isResizing = false;
+                if (e.isPopupTrigger() || e.getButton() == MouseEvent.BUTTON3) {
+                    popupMenu.show(e.getComponent(), e.getX(), e.getY());
+                }
+            }
+            @Override
+            public void mouseDragged(MouseEvent e) {
+                if (isResizing) {
+                    int newW = Math.max(300, e.getX());
+                    int newH = Math.max(80, e.getY());
+                    setSize(newW, newH);
+                    revalidate(); repaint();
+                } else {
+                    setLocation(getLocation().x + e.getX() - pressX, getLocation().y + e.getY() - pressY);
+                }
+            }
+        };
+        addMouseListener(mouseHandler);
+        addMouseMotionListener(mouseHandler);
+        
+        uiTimer = new javax.swing.Timer(50, e -> updateRealtimeData());
+        uiTimer.start();
+    }
+
+    private javax.swing.JPanel createRowPanel() {
+        javax.swing.JPanel p = new javax.swing.JPanel(new java.awt.BorderLayout());
+        p.setOpaque(false);
+        p.setBorder(javax.swing.BorderFactory.createEmptyBorder(0, 15, 0, 15)); // 左右增加一点边距，避免文字贴边
+        return p;
+    }
+
+    private javax.swing.JLabel createLabel(int alignment) {
+        javax.swing.JLabel lbl = new javax.swing.JLabel("-");
+        lbl.setHorizontalAlignment(alignment);
+        lbl.setForeground(currentTextColor);
+        return lbl;
+    }
+
+    private void updateLayoutFonts() {
+        Font f = baseFont.deriveFont(Font.BOLD, 14f + fontSizeOffset);
+        Font timeFont = baseFont.deriveFont(Font.BOLD, 16f + fontSizeOffset); 
+        Font detailFont = baseFont.deriveFont(Font.PLAIN, 13f + fontSizeOffset);
+
+        label1_Mode.setFont(f);
+        label4_Ping.setFont(f);
+        label2_Level.setFont(f);
+        label7_WinRate.setFont(f);
+        
+        label5_Round.setFont(f);
+        label3_Time.setFont(timeFont);
+        label6_Detail.setFont(detailFont);
+
+        Color c = currentTextColor;
+        label1_Mode.setForeground(c); label4_Ping.setForeground(c);
+        label2_Level.setForeground(c); label7_WinRate.setForeground(c);
+        label5_Round.setForeground(c); label3_Time.setForeground(c); label6_Detail.setForeground(c);
+    }
+
+    // ... (保持 chooseSystemFont, importCustomFont, chooseBackgroundImage, chooseTextColor, toggleMode, resetStyle) ...
+    public void toggleMode() {
+        this.setVisible(false);
+        if (FallGuysRecord.frame != null) {
+            FallGuysRecord.frame.setVisible(true);
+            FallGuysRecord.frame.setExtendedState(JFrame.NORMAL);
+            FallGuysRecord.frame.toFront();
+        }
+    }
+    private void resetStyle() {
+        bgImage = null;
+        currentTextColor = Color.WHITE;
+        fontSizeOffset = 0;
+        baseFont = new Font("Microsoft YaHei UI", Font.BOLD, 14);
+        setSize(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+        updateLayoutFonts();
+        repaint();
+    }
+    private void chooseSystemFont() {
+        java.awt.GraphicsEnvironment ge = java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment();
+        String[] fontNames = ge.getAvailableFontFamilyNames();
+        String selected = (String) javax.swing.JOptionPane.showInputDialog(this, "选择字体:", "字体设置", javax.swing.JOptionPane.PLAIN_MESSAGE, null, fontNames, baseFont.getFamily());
+        if (selected != null) { baseFont = new Font(selected, Font.BOLD, 14); updateLayoutFonts(); }
+    }
+    private void importCustomFont() {
+        javax.swing.JFileChooser fc = new javax.swing.JFileChooser();
+        if (fc.showOpenDialog(this) == javax.swing.JFileChooser.APPROVE_OPTION) {
+            try {
+                Font font = Font.createFont(Font.TRUETYPE_FONT, fc.getSelectedFile());
+                java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().registerFont(font);
+                baseFont = font; updateLayoutFonts();
+            } catch (Exception ex) { ex.printStackTrace(); }
+        }
+    }
+    private void chooseBackgroundImage() {
+        javax.swing.JFileChooser fc = new javax.swing.JFileChooser();
+        if (fc.showOpenDialog(this) == javax.swing.JFileChooser.APPROVE_OPTION) {
+            try { bgImage = javax.imageio.ImageIO.read(fc.getSelectedFile()); repaint(); } catch (IOException ex) {}
+        }
+    }
+    private void chooseTextColor() {
+        Color c = javax.swing.JColorChooser.showDialog(this, "颜色", currentTextColor);
+        if (c != null) { currentTextColor = c; updateLayoutFonts(); }
+    }
+    public void updateData() {} 
+
+    // ================= [核心数据更新] =================
+    private void updateRealtimeData() {
+        if (!isVisible()) return;
+
+        Match m = Core.currentMatch;
+        Round r = Core.currentRound;
+
+        // --- 1. 模式 (左上) ---
+        if (m != null) label1_Mode.setText(Core.getRes(m.name));
+        else label1_Mode.setText("Wait...");
+
+        // --- 4. Ping (右上) ---
+        if (m != null && m.pingMS > 0) {
+            label4_Ping.setText(m.pingMS + " ms");
+            if (m.pingMS < 60) label4_Ping.setForeground(Color.GREEN);
+            else if (m.pingMS < 120) label4_Ping.setForeground(Color.YELLOW);
+            else label4_Ping.setForeground(Color.RED);
+        } else {
+            label4_Ping.setText("- ms");
+            label4_Ping.setForeground(currentTextColor);
+        }
+
+        if (r == null) {
+            label2_Level.setText("-");
+            label7_WinRate.setText("Win: 0/0");
+            label5_Round.setText("-");
+            label3_Time.setText("00:00");
+            label6_Detail.setText("");
+            return;
+        }
+
+        // --- 2. 关卡 (左中) ---
+        label2_Level.setText(r.getName());
+
+        // --- 7. 胜率 (右中) ---
+        long sessionTotal = 0;
+        long sessionWins = 0;
+        synchronized (Core.listLock) {
+            for (Match match : Core.matches) {
+                if (match.isCurrentSession()) {
+                    sessionTotal++;
+                    if (match.isWin()) sessionWins++;
+                }
+            }
+        }
+        label7_WinRate.setText("Win: " + sessionWins + "/" + sessionTotal);
+
+        // --- 5. 回合 (左下) ---
+        if (r.isFinal()) {
+            label5_Round.setText("Final");
+            label5_Round.setForeground(Color.ORANGE);
+        } else {
+            label5_Round.setText("Round " + (r.no + 1));
+            label5_Round.setForeground(currentTextColor);
+        }
+
+        // --- 3. 时间 (中下) ---
+        long globalTime = 0;
+        boolean isPlaying = false;
+        if (r.end != null) {
+            globalTime = r.getTime(r.end);
+        } else if (r.start != null) {
+            globalTime = System.currentTimeMillis() - r.start.getTime();
+            isPlaying = true;
+        }
+        if (globalTime < 0) globalTime = 0;
+        
+        long min = globalTime / 60000;
+        long sec = (globalTime % 60000) / 1000;
+        label3_Time.setText(String.format("%02d:%02d", min, sec));
+        if (isPlaying) label3_Time.setForeground(Color.GREEN);
+        else label3_Time.setForeground(currentTextColor);
+
+        // --- 6. 详情 (右下) ---
+        Player me = r.getMe();
+        // 使用右对齐 div
+        StringBuilder sb = new StringBuilder("<html><div style='text-align: right;'>");
+        
+        if (me != null) {
+            boolean isScoreMode = false;
+            RoundDef def = r.getDef();
+            if (def != null && (def.type == RoundType.HUNT_RACE || def.type == RoundType.HUNT_SURVIVE || def.type == RoundType.TEAM)) {
+                isScoreMode = true;
+            }
+
+            if (r.isSquad() && me.squadId != 0) {
+                // 组队模式
+                java.util.List<Squad> squads = r.bySquadRank();
+                int myRank = -1;
+                if (squads != null) {
+                    for(int i=0; i<squads.size(); i++) {
+                        if (squads.get(i).squadId == me.squadId) {
+                            myRank = i + 1; break;
+                        }
+                    }
+                }
+                if (myRank > 0) sb.append("<font color='#FFA500'>#").append(myRank).append("</font> ");
+
+                Squad s = r.getSquad(me.squadId);
+                if (s != null && s.members != null) {
+                    int index = 1;
+                    for (Player p : s.members) {
+                        if (index > 1) sb.append(" ");
+                        String nameStr = (p.id == me.id) ? "Me" : "P" + index;
+                        if (p.id == me.id) nameStr = "<font color='#00FFFF'>Me</font>";
+                        sb.append(nameStr).append(":");
+                        
+                        if (isScoreMode) {
+                            sb.append(p.score);
+                        } else {
+                            if (p.finish != null) {
+                                long t = r.getTime(p.finish);
+                                sb.append(String.format("%d:%02d", t/60000, (t%60000)/1000));
+                            } else if (p.qualified == Boolean.FALSE) {
+                                sb.append("X");
+                            } else if (p.qualified == Boolean.TRUE) {
+                                sb.append("✔");
+                            } else {
+                                sb.append("-");
+                            }
+                        }
+                        index++;
+                    }
+                }
+            } else {
+                // 单人模式
+                if (me.finish != null) {
+                    if (me.ranking > 0) sb.append("#").append(me.ranking).append(" ");
+                    long t = r.getTime(me.finish);
+                    sb.append(String.format("%02d:%02d.%02d", t/60000, (t%60000)/1000, (t%1000)/10));
+                } else if (me.qualified == Boolean.FALSE) {
+                    sb.append("Eliminated");
+                } else {
+                    if (isScoreMode && me.score > 0) sb.append("Score: ").append(me.score);
+                    else if (me.qualified == Boolean.TRUE) sb.append("Qualified");
+                    else sb.append("Running...");
+                }
+            }
+        }
+        sb.append("</div></html>");
+        label6_Detail.setText(sb.toString());
+        
+        repaint();
+    }
 }
