@@ -823,7 +823,7 @@ class AllRoundFilter implements RoundFilter {
 
 	@Override
 	public String toString() {
-		return Core.getRes("ALL");
+		return Core.getRes("所有比赛");
 	}
 }
 
@@ -835,7 +835,7 @@ class CurrentSessionRoundFilter implements RoundFilter {
 
 	@Override
 	public String toString() {
-		return Core.getRes("CurrentSesionOnly");
+		return Core.getRes("当次游戏启动");
 	}
 }
 
@@ -2554,7 +2554,7 @@ public class FallGuysRecord extends JFrame implements FGReader.Listener {
 		creativesWindow.setResizable(true);
 		creativesWindow.setBounds(creativesWinRect);
 		creativesWindow.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
-		creativesWindow.setVisible(true);
+		creativesWindow.setVisible(false);
 		creativesWindow.loadTableStat();
 	}
 
@@ -2612,7 +2612,7 @@ public class FallGuysRecord extends JFrame implements FGReader.Listener {
 		label.setSize(100, 20);
 		p.add(label);
 
-		label = new JLabel("Ver 1.1.2");
+		label = new JLabel("custom for MMA自由格斗健身教练马哥🐎");
 		label.setFont(new Font(fontFamily, Font.PLAIN, FONT_SIZE_BASE));
 		l.putConstraint(SpringLayout.EAST, label, -8, SpringLayout.EAST, p);
 		l.putConstraint(SpringLayout.SOUTH, label, -8, SpringLayout.SOUTH, p);
@@ -3574,41 +3574,44 @@ class LogRotator extends java.io.OutputStream {
     }
 }
 
-// ==================== [布局终极调整版] 悬浮小窗类 ====================
+// ==================== [终极自适应布局版] 悬浮小窗类 ====================
 class MiniStateWindow extends javax.swing.JWindow {
     // --- UI 组件 ---
-    // Row 1
-    private javax.swing.JLabel label1_Mode;   // 1. 模式 (左上)
-    private javax.swing.JLabel label4_Ping;   // 4. 延迟 (右上)
-    // Row 2
-    private javax.swing.JLabel label2_Level;  // 2. 关卡 (左中)
-    private javax.swing.JLabel label7_WinRate;// 7. 胜率 (右中) - [放这里]
-    // Row 3 (Bottom)
-    private javax.swing.JLabel label5_Round;  // 5. 轮次 (左下) - [放这里]
-    private javax.swing.JLabel label3_Time;   // 3. 时间 (中下) - [放这里]
-    private javax.swing.JLabel label6_Detail; // 6. 详情 (右下) - [放这里]
+    private OutlinedLabel label1_Mode;   // 1. 模式
+    private OutlinedLabel label4_Ping;   // 4. 延迟
+    private OutlinedLabel label2_Level;  // 2. 关卡
+    private OutlinedLabel label7_WinRate;// 7. 胜率
+    private OutlinedLabel label5_Round;  // 5. 轮次
+    private OutlinedLabel label3_Time;   // 3. 时间
+    private DetailStatsPanel label6_Detail; // 6. 详情
 
     private javax.swing.JPanel backgroundPanel;
     private javax.swing.Timer uiTimer;
+    private javax.swing.Timer saveTimer;
     
-    // 样式配置
-    private java.awt.Image bgImage = null;
-    private Color currentTextColor = Color.WHITE;
-    private int fontSizeOffset = 0;
+    // 配置数据
+    private ConfigData config;
     private Font baseFont;
     
-    // 窗口状态
-    private static final int DEFAULT_WIDTH = 560;
-    private static final int DEFAULT_HEIGHT = 120;
+    private Color currentTextColor = Color.WHITE; 
+    private Color currentOutlineColor = Color.BLACK;
+
+    private static final String CONFIG_FILE = "mini_config.dat";
 
     public MiniStateWindow() {
+        loadConfig();
+
         setAlwaysOnTop(true);
         setBackground(new Color(0, 0, 0, 0));
-        setSize(DEFAULT_WIDTH, DEFAULT_HEIGHT);
         
-        baseFont = new Font("Microsoft YaHei UI", Font.BOLD, 14);
+        if (config.x != -1 && config.y != -1) {
+            setLocation(config.x, config.y);
+        }
+        setSize(config.width, config.height);
+        
+        updateBaseFont();
 
-        // --- 右键菜单 (保持不变) ---
+        // --- 右键菜单 ---
         javax.swing.JPopupMenu popupMenu = new javax.swing.JPopupMenu();
         javax.swing.JMenu fontMenu = new javax.swing.JMenu("字体设置");
         javax.swing.JMenuItem itemSysFont = new javax.swing.JMenuItem("选择系统字体...");
@@ -3619,22 +3622,33 @@ class MiniStateWindow extends javax.swing.JWindow {
         fontMenu.add(itemImpFont);
         fontMenu.addSeparator();
         javax.swing.JMenuItem itemFontUp = new javax.swing.JMenuItem("字体变大 (+)");
-        itemFontUp.addActionListener(e -> { fontSizeOffset += 2; updateLayoutFonts(); });
+        itemFontUp.addActionListener(e -> { config.fontSizeOffset += 2; updateLayoutFonts(); saveConfigDelayed(); });
         fontMenu.add(itemFontUp);
         javax.swing.JMenuItem itemFontDown = new javax.swing.JMenuItem("字体变小 (-)");
-        itemFontDown.addActionListener(e -> { fontSizeOffset -= 2; updateLayoutFonts(); });
+        itemFontDown.addActionListener(e -> { config.fontSizeOffset -= 2; updateLayoutFonts(); saveConfigDelayed(); });
         fontMenu.add(itemFontDown);
         popupMenu.add(fontMenu);
 
         javax.swing.JMenuItem itemBg = new javax.swing.JMenuItem("设置背景图片...");
         itemBg.addActionListener(e -> chooseBackgroundImage());
         popupMenu.add(itemBg);
+        
         javax.swing.JMenuItem itemColor = new javax.swing.JMenuItem("设置文字颜色...");
         itemColor.addActionListener(e -> chooseTextColor());
         popupMenu.add(itemColor);
+        
+        javax.swing.JMenuItem itemStroke = new javax.swing.JMenuItem("切换描边颜色 (黑/白)");
+        itemStroke.addActionListener(e -> toggleOutlineColor());
+        popupMenu.add(itemStroke);
+
         popupMenu.addSeparator();
         javax.swing.JMenuItem itemResetSize = new javax.swing.JMenuItem("重置窗口大小");
-        itemResetSize.addActionListener(e -> { setSize(DEFAULT_WIDTH, DEFAULT_HEIGHT); validate(); });
+        itemResetSize.addActionListener(e -> { 
+            setSize(560, 120); 
+            config.width=560; config.height=120; 
+            saveConfigDelayed(); 
+            revalidate(); 
+        });
         popupMenu.add(itemResetSize);
         javax.swing.JMenuItem itemReset = new javax.swing.JMenuItem("重置所有样式");
         itemReset.addActionListener(e -> resetStyle());
@@ -3650,12 +3664,15 @@ class MiniStateWindow extends javax.swing.JWindow {
                 super.paintComponent(g);
                 java.awt.Graphics2D g2d = (java.awt.Graphics2D) g;
                 g2d.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING, java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+                g2d.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING, java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
                 
                 int w = getWidth();
                 int h = getHeight();
 
-                if (bgImage != null) {
-                    g.drawImage(bgImage, 0, 0, w, h, this);
+                if (config.bgImage != null) {
+                    g.drawImage(config.bgImage, 0, 0, w, h, this);
+                    g.setColor(new Color(0, 0, 0, 40)); 
+                    g.fillRect(0, 0, w, h);
                 } else {
                     g.setColor(new Color(20, 20, 20, 210));
                     g.fillRect(0, 0, w, h);
@@ -3663,8 +3680,8 @@ class MiniStateWindow extends javax.swing.JWindow {
                     g.drawRect(0, 0, w - 1, h - 1);
                 }
                 
-                // 右下角调整手柄
-                g2d.setColor(new Color(180, 180, 180, 100));
+                // Grip
+                g2d.setColor(new Color(200, 200, 200, 150));
                 g2d.setStroke(new java.awt.BasicStroke(2));
                 g2d.drawLine(w - 12, h, w, h - 12);
                 g2d.drawLine(w - 7, h, w, h - 7);
@@ -3673,55 +3690,64 @@ class MiniStateWindow extends javax.swing.JWindow {
         };
         backgroundPanel.setLayout(new java.awt.GridLayout(3, 1));
         
-        // === 第一行 (Top) ===
+        // === Row 1 ===
         javax.swing.JPanel row1 = createRowPanel();
-        label1_Mode = createLabel(javax.swing.SwingConstants.LEFT);  // 1. 模式
-        label4_Ping = createLabel(javax.swing.SwingConstants.RIGHT); // 4. Ping
+        label1_Mode = new OutlinedLabel("-", javax.swing.SwingConstants.LEFT);
+        label4_Ping = new OutlinedLabel("-", javax.swing.SwingConstants.RIGHT);
         row1.add(label1_Mode, java.awt.BorderLayout.WEST);
         row1.add(label4_Ping, java.awt.BorderLayout.EAST);
         backgroundPanel.add(row1);
 
-        // === 第二行 (Middle) ===
+        // === Row 2 ===
         javax.swing.JPanel row2 = createRowPanel();
-        label2_Level = createLabel(javax.swing.SwingConstants.LEFT);  // 2. 关卡
-        label7_WinRate = createLabel(javax.swing.SwingConstants.RIGHT); // 7. 胜率 [放在右侧]
+        label2_Level = new OutlinedLabel("-", javax.swing.SwingConstants.LEFT);
+        label7_WinRate = new OutlinedLabel("-", javax.swing.SwingConstants.RIGHT);
         row2.add(label2_Level, java.awt.BorderLayout.WEST);
         row2.add(label7_WinRate, java.awt.BorderLayout.EAST);
         backgroundPanel.add(row2);
 
-        // === 第三行 (Bottom) ===
+        // === Row 3 (GridBagLayout 实现自适应) ===
         javax.swing.JPanel row3 = createRowPanel();
+        row3.setLayout(new java.awt.GridBagLayout());
+        java.awt.GridBagConstraints gbc = new java.awt.GridBagConstraints();
         
-        // 左: 轮次 (5)
-        label5_Round = createLabel(javax.swing.SwingConstants.LEFT);
+        // 左: 轮次 (无固定宽度)
+        label5_Round = new OutlinedLabel("-", javax.swing.SwingConstants.LEFT);
+        gbc.gridx = 0; gbc.gridy = 0;
+        gbc.weightx = 1.0; // 共享空间
+        gbc.fill = java.awt.GridBagConstraints.NONE;
+        gbc.anchor = java.awt.GridBagConstraints.WEST;
+        row3.add(label5_Round, gbc);
         
-        // 中: 时间 (3) - 居中显示
-        label3_Time = createLabel(javax.swing.SwingConstants.CENTER);
+        // 中: 时间 (绝对居中)
+        label3_Time = new OutlinedLabel("00:00", javax.swing.SwingConstants.CENTER);
+        gbc.gridx = 1; 
+        gbc.weightx = 1.0; 
+        gbc.anchor = java.awt.GridBagConstraints.CENTER;
+        row3.add(label3_Time, gbc);
         
-        // 右: 详情 (6)
-        label6_Detail = createLabel(javax.swing.SwingConstants.RIGHT);
+        // 右: 详情
+        label6_Detail = new DetailStatsPanel(); 
+        gbc.gridx = 2; 
+        gbc.weightx = 1.0; 
+        gbc.anchor = java.awt.GridBagConstraints.EAST;
+        row3.add(label6_Detail, gbc);
         
-        row3.add(label5_Round, java.awt.BorderLayout.WEST);
-        row3.add(label3_Time, java.awt.BorderLayout.CENTER);
-        row3.add(label6_Detail, java.awt.BorderLayout.EAST);
         backgroundPanel.add(row3);
         
         setContentPane(backgroundPanel);
         updateLayoutFonts();
 
-        // --- 鼠标交互 (移动 + 调整大小) ---
+        // --- 鼠标交互 ---
         javax.swing.event.MouseInputAdapter mouseHandler = new javax.swing.event.MouseInputAdapter() {
             int pressX, pressY;
             boolean isResizing = false;
             final int RESIZE_AREA = 15;
-
             @Override
             public void mouseMoved(MouseEvent e) {
-                if (e.getX() >= getWidth() - RESIZE_AREA && e.getY() >= getHeight() - RESIZE_AREA) {
+                if (e.getX() >= getWidth() - RESIZE_AREA && e.getY() >= getHeight() - RESIZE_AREA) 
                     setCursor(new java.awt.Cursor(java.awt.Cursor.SE_RESIZE_CURSOR));
-                } else {
-                    setCursor(new java.awt.Cursor(java.awt.Cursor.DEFAULT_CURSOR));
-                }
+                else setCursor(new java.awt.Cursor(java.awt.Cursor.DEFAULT_CURSOR));
             }
             @Override
             public void mousePressed(MouseEvent e) {
@@ -3737,6 +3763,9 @@ class MiniStateWindow extends javax.swing.JWindow {
             }
             @Override
             public void mouseReleased(MouseEvent e) {
+                if (isResizing) {
+                    config.width = getWidth(); config.height = getHeight(); saveConfigDelayed();
+                }
                 isResizing = false;
                 if (e.isPopupTrigger() || e.getButton() == MouseEvent.BUTTON3) {
                     popupMenu.show(e.getComponent(), e.getX(), e.getY());
@@ -3750,7 +3779,11 @@ class MiniStateWindow extends javax.swing.JWindow {
                     setSize(newW, newH);
                     revalidate(); repaint();
                 } else {
-                    setLocation(getLocation().x + e.getX() - pressX, getLocation().y + e.getY() - pressY);
+                    int newX = getLocation().x + e.getX() - pressX;
+                    int newY = getLocation().y + e.getY() - pressY;
+                    setLocation(newX, newY);
+                    config.x = newX; config.y = newY;
+                    saveConfigDelayed();
                 }
             }
         };
@@ -3759,45 +3792,178 @@ class MiniStateWindow extends javax.swing.JWindow {
         
         uiTimer = new javax.swing.Timer(50, e -> updateRealtimeData());
         uiTimer.start();
+        
+        saveTimer = new javax.swing.Timer(2000, e -> saveConfig());
+        saveTimer.setRepeats(false);
+    }
+    
+    private void saveConfigDelayed() { saveTimer.restart(); }
+
+    // --- Config Data ---
+    static class ConfigData implements java.io.Serializable {
+        private static final long serialVersionUID = 1L;
+        int x = -1, y = -1, width = 560, height = 120;
+        int textColorRGB = Color.WHITE.getRGB();
+        int outlineColorRGB = Color.BLACK.getRGB(); 
+        int fontSizeOffset = 0;
+        String fontName = "Microsoft YaHei UI";
+        String customFontPath = null; 
+        String bgImagePath = null;    
+        transient java.awt.Image bgImage; 
+    }
+    
+    // --- Outlined Label ---
+    static class OutlinedLabel extends javax.swing.JLabel {
+        Color outlineColor = Color.BLACK;
+        public OutlinedLabel(String text, int align) { super(text, align); }
+        public void setOutlineColor(Color c) { this.outlineColor = c; repaint(); }
+        @Override
+        public void paintComponent(java.awt.Graphics g) {
+            String text = getText();
+            if (text == null || text.length() == 0) return;
+            java.awt.Graphics2D g2 = (java.awt.Graphics2D) g.create();
+            g2.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING, java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING, java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            g2.setFont(getFont());
+            
+            java.awt.FontMetrics fm = g2.getFontMetrics();
+            int x = 0;
+            int y = (getHeight() - fm.getHeight()) / 2 + fm.getAscent();
+            if (getHorizontalAlignment() == javax.swing.SwingConstants.CENTER) x = (getWidth() - fm.stringWidth(text)) / 2;
+            else if (getHorizontalAlignment() == javax.swing.SwingConstants.RIGHT) x = getWidth() - fm.stringWidth(text);
+            
+            java.awt.font.TextLayout tl = new java.awt.font.TextLayout(text, getFont(), g2.getFontRenderContext());
+            java.awt.Shape shape = tl.getOutline(java.awt.geom.AffineTransform.getTranslateInstance(x, y));
+            
+            g2.setColor(outlineColor);
+            g2.setStroke(new java.awt.BasicStroke(2.5f));
+            g2.draw(shape);
+            g2.setColor(getForeground());
+            g2.fill(shape);
+            g2.dispose();
+        }
+    }
+
+    // --- Detail Stats Panel ---
+    static class DetailStatsPanel extends javax.swing.JPanel {
+        java.util.List<TextSegment> segments = new java.util.ArrayList<>();
+        Font font;
+        Color outlineColor = Color.BLACK;
+        public DetailStatsPanel() { setOpaque(false); }
+        public void setContent(java.util.List<TextSegment> segs) { 
+            this.segments = segs; 
+            revalidate(); 
+            repaint(); 
+        }
+        public void setMyFont(Font f) { 
+            this.font = f; 
+            revalidate();
+            repaint();
+        }
+        public void setOutlineColor(Color c) { this.outlineColor = c; repaint(); }
+        
+        @Override
+        public java.awt.Dimension getPreferredSize() {
+            if (segments.isEmpty() || font == null) return new java.awt.Dimension(0, 0);
+            java.awt.FontMetrics fm = getFontMetrics(font);
+            int totalW = 0;
+            for(TextSegment s : segments) totalW += fm.stringWidth(s.text);
+            return new java.awt.Dimension(totalW + 5, fm.getHeight());
+        }
+
+        @Override
+        protected void paintComponent(java.awt.Graphics g) {
+            super.paintComponent(g);
+            if (segments.isEmpty() || font == null) return;
+            java.awt.Graphics2D g2 = (java.awt.Graphics2D) g.create();
+            g2.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING, java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING, java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            g2.setFont(font);
+            java.awt.FontMetrics fm = g2.getFontMetrics();
+            
+            int totalW = 0;
+            for(TextSegment s : segments) totalW += fm.stringWidth(s.text);
+            
+            int x = getWidth() - totalW; // Right align
+            int y = (getHeight() - fm.getHeight()) / 2 + fm.getAscent();
+            
+            for(TextSegment s : segments) {
+                java.awt.font.TextLayout tl = new java.awt.font.TextLayout(s.text, font, g2.getFontRenderContext());
+                java.awt.Shape shape = tl.getOutline(java.awt.geom.AffineTransform.getTranslateInstance(x, y));
+                g2.setColor(outlineColor);
+                g2.setStroke(new java.awt.BasicStroke(2.5f));
+                g2.draw(shape);
+                g2.setColor(s.color);
+                g2.fill(shape);
+                x += fm.stringWidth(s.text);
+            }
+            g2.dispose();
+        }
+        static class TextSegment { String text; Color color; TextSegment(String t, Color c){text=t;color=c;} }
+    }
+
+    // --- Loading/Saving ---
+    private void loadConfig() {
+        config = new ConfigData();
+        try (java.io.ObjectInputStream in = new java.io.ObjectInputStream(new java.io.FileInputStream(CONFIG_FILE))) {
+            config = (ConfigData) in.readObject();
+            if (config.bgImagePath != null) config.bgImage = javax.imageio.ImageIO.read(new File(config.bgImagePath));
+        } catch (Exception e) { }
+        currentTextColor = new Color(config.textColorRGB);
+        currentOutlineColor = new Color(config.outlineColorRGB);
+    }
+    
+    private void saveConfig() {
+        try (java.io.ObjectOutputStream out = new java.io.ObjectOutputStream(new java.io.FileOutputStream(CONFIG_FILE))) {
+            out.writeObject(config);
+        } catch (Exception e) { e.printStackTrace(); }
+    }
+
+    private void updateBaseFont() {
+        try {
+            if (config.customFontPath != null) {
+                baseFont = Font.createFont(Font.TRUETYPE_FONT, new File(config.customFontPath));
+                java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().registerFont(baseFont);
+            } else {
+                baseFont = new Font(config.fontName, Font.BOLD, 14);
+            }
+        } catch (Exception e) {
+            baseFont = new Font("Microsoft YaHei UI", Font.BOLD, 14);
+        }
     }
 
     private javax.swing.JPanel createRowPanel() {
         javax.swing.JPanel p = new javax.swing.JPanel(new java.awt.BorderLayout());
         p.setOpaque(false);
-        p.setBorder(javax.swing.BorderFactory.createEmptyBorder(0, 15, 0, 15)); // 左右增加一点边距，避免文字贴边
+        p.setBorder(javax.swing.BorderFactory.createEmptyBorder(0, 15, 0, 15));
         return p;
     }
 
-    private javax.swing.JLabel createLabel(int alignment) {
-        javax.swing.JLabel lbl = new javax.swing.JLabel("-");
-        lbl.setHorizontalAlignment(alignment);
-        lbl.setForeground(currentTextColor);
-        return lbl;
-    }
-
     private void updateLayoutFonts() {
-        Font f = baseFont.deriveFont(Font.BOLD, 14f + fontSizeOffset);
-        Font timeFont = baseFont.deriveFont(Font.BOLD, 16f + fontSizeOffset); 
-        Font detailFont = baseFont.deriveFont(Font.PLAIN, 13f + fontSizeOffset);
+        Font f = baseFont.deriveFont(Font.BOLD, 14f + config.fontSizeOffset);
+        Font timeFont = baseFont.deriveFont(Font.BOLD, 16f + config.fontSizeOffset); 
+        Font detailFont = baseFont.deriveFont(Font.PLAIN, 13f + config.fontSizeOffset);
 
-        label1_Mode.setFont(f);
-        label4_Ping.setFont(f);
-        label2_Level.setFont(f);
-        label7_WinRate.setFont(f);
-        
-        label5_Round.setFont(f);
-        label3_Time.setFont(timeFont);
-        label6_Detail.setFont(detailFont);
+        label1_Mode.setFont(f); label4_Ping.setFont(f);
+        label2_Level.setFont(f); label7_WinRate.setFont(f);
+        label5_Round.setFont(f); label3_Time.setFont(timeFont);
+        label6_Detail.setMyFont(detailFont);
 
         Color c = currentTextColor;
-        label1_Mode.setForeground(c); label4_Ping.setForeground(c);
-        label2_Level.setForeground(c); label7_WinRate.setForeground(c);
-        label5_Round.setForeground(c); label3_Time.setForeground(c); label6_Detail.setForeground(c);
+        Color outline = currentOutlineColor; 
+        
+        OutlinedLabel[] labels = {label1_Mode, label4_Ping, label2_Level, label7_WinRate, label5_Round, label3_Time};
+        for(OutlinedLabel l : labels) {
+            l.setForeground(c);
+            l.setOutlineColor(outline);
+        }
+        label6_Detail.setOutlineColor(outline);
     }
 
-    // ... (保持 chooseSystemFont, importCustomFont, chooseBackgroundImage, chooseTextColor, toggleMode, resetStyle) ...
+    // --- Menu Actions ---
     public void toggleMode() {
         this.setVisible(false);
+        saveConfig();
         if (FallGuysRecord.frame != null) {
             FallGuysRecord.frame.setVisible(true);
             FallGuysRecord.frame.setExtendedState(JFrame.NORMAL);
@@ -3805,59 +3971,88 @@ class MiniStateWindow extends javax.swing.JWindow {
         }
     }
     private void resetStyle() {
-        bgImage = null;
+        config = new ConfigData(); 
         currentTextColor = Color.WHITE;
-        fontSizeOffset = 0;
+        currentOutlineColor = Color.BLACK;
         baseFont = new Font("Microsoft YaHei UI", Font.BOLD, 14);
-        setSize(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+        setSize(560, 120);
         updateLayoutFonts();
         repaint();
+        saveConfigDelayed();
     }
     private void chooseSystemFont() {
         java.awt.GraphicsEnvironment ge = java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment();
         String[] fontNames = ge.getAvailableFontFamilyNames();
         String selected = (String) javax.swing.JOptionPane.showInputDialog(this, "选择字体:", "字体设置", javax.swing.JOptionPane.PLAIN_MESSAGE, null, fontNames, baseFont.getFamily());
-        if (selected != null) { baseFont = new Font(selected, Font.BOLD, 14); updateLayoutFonts(); }
+        if (selected != null) { 
+            config.fontName = selected; 
+            config.customFontPath = null; 
+            updateBaseFont(); 
+            updateLayoutFonts(); 
+            saveConfigDelayed();
+        }
     }
     private void importCustomFont() {
         javax.swing.JFileChooser fc = new javax.swing.JFileChooser();
         if (fc.showOpenDialog(this) == javax.swing.JFileChooser.APPROVE_OPTION) {
-            try {
-                Font font = Font.createFont(Font.TRUETYPE_FONT, fc.getSelectedFile());
-                java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().registerFont(font);
-                baseFont = font; updateLayoutFonts();
-            } catch (Exception ex) { ex.printStackTrace(); }
+            File f = fc.getSelectedFile();
+            config.customFontPath = f.getAbsolutePath();
+            config.fontName = null;
+            updateBaseFont();
+            updateLayoutFonts();
+            saveConfigDelayed();
         }
     }
     private void chooseBackgroundImage() {
         javax.swing.JFileChooser fc = new javax.swing.JFileChooser();
         if (fc.showOpenDialog(this) == javax.swing.JFileChooser.APPROVE_OPTION) {
-            try { bgImage = javax.imageio.ImageIO.read(fc.getSelectedFile()); repaint(); } catch (IOException ex) {}
+            try { 
+                File f = fc.getSelectedFile();
+                config.bgImage = javax.imageio.ImageIO.read(f); 
+                config.bgImagePath = f.getAbsolutePath();
+                repaint(); 
+                saveConfigDelayed();
+            } catch (IOException ex) {}
         }
     }
     private void chooseTextColor() {
-        Color c = javax.swing.JColorChooser.showDialog(this, "颜色", currentTextColor);
-        if (c != null) { currentTextColor = c; updateLayoutFonts(); }
+        Color c = javax.swing.JColorChooser.showDialog(this, "文字颜色", currentTextColor);
+        if (c != null) { 
+            currentTextColor = c; 
+            config.textColorRGB = c.getRGB();
+            if (c.getRed() < 50 && c.getGreen() < 50 && c.getBlue() < 50) currentOutlineColor = Color.WHITE;
+            else currentOutlineColor = Color.BLACK;
+            config.outlineColorRGB = currentOutlineColor.getRGB();
+            updateLayoutFonts();
+            saveConfigDelayed();
+        }
+    }
+    private void toggleOutlineColor() {
+        if (currentOutlineColor.equals(Color.WHITE)) currentOutlineColor = Color.BLACK;
+        else currentOutlineColor = Color.WHITE;
+        config.outlineColorRGB = currentOutlineColor.getRGB();
+        updateLayoutFonts();
+        saveConfigDelayed();
     }
     public void updateData() {} 
 
-    // ================= [核心数据更新] =================
+    // ================= [Data Update] =================
     private void updateRealtimeData() {
         if (!isVisible()) return;
 
         Match m = Core.currentMatch;
         Round r = Core.currentRound;
 
-        // --- 1. 模式 (左上) ---
+        // 1. Mode
         if (m != null) label1_Mode.setText(Core.getRes(m.name));
         else label1_Mode.setText("Wait...");
 
-        // --- 4. Ping (右上) ---
+        // 4. Ping
         if (m != null && m.pingMS > 0) {
             label4_Ping.setText(m.pingMS + " ms");
             if (m.pingMS < 60) label4_Ping.setForeground(Color.GREEN);
             else if (m.pingMS < 120) label4_Ping.setForeground(Color.YELLOW);
-            else label4_Ping.setForeground(Color.RED);
+            else label4_Ping.setForeground(new Color(255, 80, 80));
         } else {
             label4_Ping.setText("- ms");
             label4_Ping.setForeground(currentTextColor);
@@ -3868,14 +4063,14 @@ class MiniStateWindow extends javax.swing.JWindow {
             label7_WinRate.setText("Win: 0/0");
             label5_Round.setText("-");
             label3_Time.setText("00:00");
-            label6_Detail.setText("");
+            label6_Detail.setContent(new java.util.ArrayList<>());
             return;
         }
 
-        // --- 2. 关卡 (左中) ---
+        // 2. Level
         label2_Level.setText(r.getName());
 
-        // --- 7. 胜率 (右中) ---
+        // 7. WinRate
         long sessionTotal = 0;
         long sessionWins = 0;
         synchronized (Core.listLock) {
@@ -3888,7 +4083,7 @@ class MiniStateWindow extends javax.swing.JWindow {
         }
         label7_WinRate.setText("Win: " + sessionWins + "/" + sessionTotal);
 
-        // --- 5. 回合 (左下) ---
+        // 5. Round
         if (r.isFinal()) {
             label5_Round.setText("Final");
             label5_Round.setForeground(Color.ORANGE);
@@ -3897,7 +4092,7 @@ class MiniStateWindow extends javax.swing.JWindow {
             label5_Round.setForeground(currentTextColor);
         }
 
-        // --- 3. 时间 (中下) ---
+        // 3. Time
         long globalTime = 0;
         boolean isPlaying = false;
         if (r.end != null) {
@@ -3907,18 +4102,15 @@ class MiniStateWindow extends javax.swing.JWindow {
             isPlaying = true;
         }
         if (globalTime < 0) globalTime = 0;
-        
         long min = globalTime / 60000;
         long sec = (globalTime % 60000) / 1000;
         label3_Time.setText(String.format("%02d:%02d", min, sec));
         if (isPlaying) label3_Time.setForeground(Color.GREEN);
         else label3_Time.setForeground(currentTextColor);
 
-        // --- 6. 详情 (右下) ---
+        // 6. Details
+        java.util.List<DetailStatsPanel.TextSegment> segs = new java.util.ArrayList<>();
         Player me = r.getMe();
-        // 使用右对齐 div
-        StringBuilder sb = new StringBuilder("<html><div style='text-align: right;'>");
-        
         if (me != null) {
             boolean isScoreMode = false;
             RoundDef def = r.getDef();
@@ -3927,61 +4119,56 @@ class MiniStateWindow extends javax.swing.JWindow {
             }
 
             if (r.isSquad() && me.squadId != 0) {
-                // 组队模式
+                // Squad Mode
                 java.util.List<Squad> squads = r.bySquadRank();
                 int myRank = -1;
                 if (squads != null) {
                     for(int i=0; i<squads.size(); i++) {
-                        if (squads.get(i).squadId == me.squadId) {
-                            myRank = i + 1; break;
-                        }
+                        if (squads.get(i).squadId == me.squadId) { myRank = i + 1; break; }
                     }
                 }
-                if (myRank > 0) sb.append("<font color='#FFA500'>#").append(myRank).append("</font> ");
+                if (myRank > 0) segs.add(new DetailStatsPanel.TextSegment("#" + myRank + " ", Color.ORANGE));
 
                 Squad s = r.getSquad(me.squadId);
                 if (s != null && s.members != null) {
                     int index = 1;
                     for (Player p : s.members) {
-                        if (index > 1) sb.append(" ");
-                        String nameStr = (p.id == me.id) ? "Me" : "P" + index;
-                        if (p.id == me.id) nameStr = "<font color='#00FFFF'>Me</font>";
-                        sb.append(nameStr).append(":");
+                        if (index > 1) segs.add(new DetailStatsPanel.TextSegment(" ", currentTextColor));
+                        Color nameC = (p.id == me.id) ? Color.CYAN : currentTextColor;
+                        String pName = (p.id == me.id) ? "Me" : "P" + index;
+                        segs.add(new DetailStatsPanel.TextSegment(pName + ":", nameC));
                         
+                        String val;
                         if (isScoreMode) {
-                            sb.append(p.score);
+                            val = String.valueOf(p.score);
                         } else {
                             if (p.finish != null) {
                                 long t = r.getTime(p.finish);
-                                sb.append(String.format("%d:%02d", t/60000, (t%60000)/1000));
-                            } else if (p.qualified == Boolean.FALSE) {
-                                sb.append("X");
-                            } else if (p.qualified == Boolean.TRUE) {
-                                sb.append("✔");
-                            } else {
-                                sb.append("-");
-                            }
+                                val = String.format("%d:%02d", t/60000, (t%60000)/1000);
+                            } else if (p.qualified == Boolean.FALSE) val = "X";
+                            else if (p.qualified == Boolean.TRUE) val = "✔";
+                            else val = "-";
                         }
+                        segs.add(new DetailStatsPanel.TextSegment(val, currentTextColor));
                         index++;
                     }
                 }
             } else {
-                // 单人模式
+                // Solo Mode
                 if (me.finish != null) {
-                    if (me.ranking > 0) sb.append("#").append(me.ranking).append(" ");
+                    if (me.ranking > 0) segs.add(new DetailStatsPanel.TextSegment("#" + me.ranking + " ", currentTextColor));
                     long t = r.getTime(me.finish);
-                    sb.append(String.format("%02d:%02d.%02d", t/60000, (t%60000)/1000, (t%1000)/10));
+                    segs.add(new DetailStatsPanel.TextSegment(String.format("%02d:%02d.%02d", t/60000, (t%60000)/1000, (t%1000)/10), currentTextColor));
                 } else if (me.qualified == Boolean.FALSE) {
-                    sb.append("Eliminated");
+                    segs.add(new DetailStatsPanel.TextSegment("Eliminated", new Color(255, 80, 80)));
                 } else {
-                    if (isScoreMode && me.score > 0) sb.append("Score: ").append(me.score);
-                    else if (me.qualified == Boolean.TRUE) sb.append("Qualified");
-                    else sb.append("Running...");
+                    if (isScoreMode && me.score > 0) segs.add(new DetailStatsPanel.TextSegment("Score: " + me.score, currentTextColor));
+                    else if (me.qualified == Boolean.TRUE) segs.add(new DetailStatsPanel.TextSegment("Qualified", Color.GREEN));
+                    else segs.add(new DetailStatsPanel.TextSegment("Running...", currentTextColor));
                 }
             }
         }
-        sb.append("</div></html>");
-        label6_Detail.setText(sb.toString());
+        label6_Detail.setContent(segs);
         
         repaint();
     }
