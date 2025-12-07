@@ -228,6 +228,7 @@ class Round implements Comparable<Round> {
 	int playerCountAdd;
 	boolean playerCountAddChanged;
 	boolean disableMe;
+	boolean isPlaying = false;
 	int qualifiedCount;
 	Map<String, Player> byName = new HashMap<String, Player>();
 	Map<Integer, Player> byId = new HashMap<Integer, Player>();
@@ -504,7 +505,15 @@ class Round implements Comparable<Round> {
 
 	@Override
 	public String toString() {
-		return getName();
+		// 如果是自定义关卡，且缓存里有标题，优先显示标题
+        if (creativeCode != null && !creativeCode.isEmpty()) {
+            CreativeMeta meta = Core.creativesMap.get(creativeCode);
+            if (meta != null && meta.title != null && !meta.title.isEmpty()) {
+                return meta.title;
+            }
+        }
+        // 否则显示默认名称
+        return getName();
 	}
 }
 
@@ -2247,6 +2256,7 @@ class FGReader extends TailerListenerAdapter {
 					Core.currentMatch.rounds.remove(r);
 				}
 				r.start = getTime(line);
+				r.isPlaying = true;
 				Core.addRound(r); // 再add
 				topObjectId = 0;
 				qualifiedCount = eliminatedCount = 0; // reset
@@ -2413,6 +2423,8 @@ class FGReader extends TailerListenerAdapter {
 					|| line.contains(
 							"[GameStateMachine] Replacing FGClient.StateGameInProgress with FGClient.StateVictoryScreen")) {
 				System.out.println("DETECT END GAME");
+				// 【新增】强制停止计时
+                //r.isPlaying = false;
 				r.fixed = true;
 				// FIXME: teamId 相当が出力されないので誰がどのチームか判定できない。
 				// 仕方ないので勝敗からチームを推測する。これだと２チーム戦しか対応できない。
@@ -2716,6 +2728,26 @@ public class FallGuysRecord extends JFrame implements FGReader.Listener {
             this.setVisible(false);
             // 显示小窗
             if (miniWindow == null) miniWindow = new MiniStateWindow();
+            // ================= [新增：强制定位到右下角] =================
+            // 获取当前屏幕的配置（支持多显示器）
+            java.awt.GraphicsConfiguration gc = java.awt.GraphicsEnvironment
+                .getLocalGraphicsEnvironment().getDefaultScreenDevice().getDefaultConfiguration();
+            java.awt.Rectangle bounds = gc.getBounds();
+            // 获取屏幕内边距（自动避开 Windows 任务栏高度）
+            java.awt.Insets insets = java.awt.Toolkit.getDefaultToolkit().getScreenInsets(gc);
+
+            int w = miniWindow.getWidth();
+            int h = miniWindow.getHeight();
+            
+            // 计算坐标：屏幕宽 - 窗口宽 - 右边距(10) - 任务栏右侧(如果有)
+            int x = bounds.x + bounds.width - w - insets.right - 20;
+            // 计算坐标：屏幕高 - 窗口高 - 下边距(10) - 底部任务栏高度
+            int y = bounds.y + bounds.height - h - insets.bottom - 20;
+
+            miniWindow.setLocation(x, y);
+            // ========================================================
+
+            // 3. 显示并刷新数据
             miniWindow.setVisible(true);
             miniWindow.updateData();
         });
@@ -3790,7 +3822,7 @@ class MiniStateWindow extends javax.swing.JWindow {
         addMouseListener(mouseHandler);
         addMouseMotionListener(mouseHandler);
         
-        uiTimer = new javax.swing.Timer(50, e -> updateRealtimeData());
+        uiTimer = new javax.swing.Timer(200, e -> updateRealtimeData());
         uiTimer.start();
         
         saveTimer = new javax.swing.Timer(2000, e -> saveConfig());
@@ -4035,6 +4067,16 @@ class MiniStateWindow extends javax.swing.JWindow {
         saveConfigDelayed();
     }
     public void updateData() {} 
+	
+	// 【新增】智能更新文本：只有内容变了才刷新，避免无意义的重绘消耗性能 , ver 2025-12-07
+    private void smartSetText(javax.swing.JLabel label, String newText) {
+        if (newText == null) newText = "";
+        // 如果内容没变，直接返回，不做任何操作
+        if (label.getText().equals(newText)) return;
+        
+        label.setText(newText);
+        // 只有 Ping 值等颜色变化频繁的标签才需要在这里处理颜色，或者保留原有逻辑
+    }
 
     // ================= [Data Update] =================
     private void updateRealtimeData() {
@@ -4044,31 +4086,45 @@ class MiniStateWindow extends javax.swing.JWindow {
         Round r = Core.currentRound;
 
         // 1. Mode
-        if (m != null) label1_Mode.setText(Core.getRes(m.name));
-        else label1_Mode.setText("Wait...");
+        smartSetText(label1_Mode, m != null ? Core.getRes(m.name) : "Wait...");
 
         // 4. Ping
+        String pingText = "- ms";
+        Color pingColor = currentTextColor;
         if (m != null && m.pingMS > 0) {
-            label4_Ping.setText(m.pingMS + " ms");
-            if (m.pingMS < 60) label4_Ping.setForeground(Color.GREEN);
-            else if (m.pingMS < 120) label4_Ping.setForeground(Color.YELLOW);
-            else label4_Ping.setForeground(new Color(255, 80, 80));
-        } else {
-            label4_Ping.setText("- ms");
-            label4_Ping.setForeground(currentTextColor);
+            pingText = m.pingMS + " ms";
+            if (m.pingMS < 60) pingColor = Color.GREEN;
+            else if (m.pingMS < 120) pingColor = Color.YELLOW;
+            else pingColor = new Color(255, 80, 80);
         }
+        smartSetText(label4_Ping, pingText);
+        if (label4_Ping.getForeground() != pingColor) label4_Ping.setForeground(pingColor);
 
         if (r == null) {
-            label2_Level.setText("-");
-            label7_WinRate.setText("Win: 0/0");
-            label5_Round.setText("-");
-            label3_Time.setText("00:00");
-            label6_Detail.setContent(new java.util.ArrayList<>());
+            smartSetText(label2_Level, "-");
+            smartSetText(label7_WinRate, "Win: 0/0");
+            smartSetText(label5_Round, "-");
+            smartSetText(label3_Time, "00:00");
+            label6_Detail.setContent(java.util.Collections.emptyList());
             return;
         }
 
         // 2. Level
-        label2_Level.setText(r.getName());
+        String levelName = r.getName();
+        if (r.creativeCode != null && !r.creativeCode.isEmpty()) {
+            CreativeMeta meta = Core.creativesMap.get(r.creativeCode);
+            if (meta != null && meta.title != null && !meta.title.isEmpty()) {
+                levelName = meta.title;
+            } else {
+                levelName = r.creativeCode;
+                if (meta == null) {
+                    final String c = r.creativeCode;
+                    final int v = r.creativeVersion;
+                    new Thread(() -> Core.retreiveCreativeInfo(c, v, true)).start();
+                }
+            }
+        }
+        smartSetText(label2_Level, levelName);
 
         // 7. WinRate
         long sessionTotal = 0;
@@ -4081,34 +4137,66 @@ class MiniStateWindow extends javax.swing.JWindow {
                 }
             }
         }
-        label7_WinRate.setText("Win: " + sessionWins + "/" + sessionTotal);
+        smartSetText(label7_WinRate, "Win: " + sessionWins + "/" + sessionTotal);
 
         // 5. Round
         if (r.isFinal()) {
-            label5_Round.setText("Final");
-            label5_Round.setForeground(Color.ORANGE);
+            smartSetText(label5_Round, "Final");
+            if (label5_Round.getForeground() != Color.ORANGE) label5_Round.setForeground(Color.ORANGE);
         } else {
-            label5_Round.setText("Round " + (r.no + 1));
-            label5_Round.setForeground(currentTextColor);
+            smartSetText(label5_Round, "Round " + (r.no + 1));
+            if (label5_Round.getForeground() != currentTextColor) label5_Round.setForeground(currentTextColor);
         }
 
+        // --- [核心修改区：全局计时器逻辑] ---
         // 3. Time
         long globalTime = 0;
-        boolean isPlaying = false;
+        boolean isTimerGreen = false; 
+        
+        // 逻辑修改：
+        // 1. 如果你出局或过关，这里不再锁定时间。
+        // 2. 时间只由“回合状态”决定。
+        
+        // 情况 A: 回合彻底结束 (所有人都跑完或超时) -> 显示最终时长，变回普通颜色
         if (r.end != null) {
             globalTime = r.getTime(r.end);
-        } else if (r.start != null) {
-            globalTime = System.currentTimeMillis() - r.start.getTime();
-            isPlaying = true;
+            isTimerGreen = false; 
+        } 
+        // 情况 B: 回合正在进行中 (且未超时熔断) -> 显示流逝时间，绿色
+        else if (r.start != null && r.isPlaying) { 
+            long duration = System.currentTimeMillis() - r.start.getTime();
+            
+            // 熔断机制：防止读取到昨天的日志导致显示几千分钟
+            if (duration > 30 * 60 * 1000) {
+                 r.isPlaying = false; // 强制关闭状态
+                 globalTime = 0;      // 归零
+                 isTimerGreen = false;
+            } else {
+                 globalTime = duration;
+                 isTimerGreen = true; // 绿色表示正在计时
+            }
         }
+        // 情况 C: 刚登录、在大厅、或未开始 -> 归零 (00:00)
+        else {
+            globalTime = 0;
+            isTimerGreen = false;
+        }
+
         if (globalTime < 0) globalTime = 0;
         long min = globalTime / 60000;
         long sec = (globalTime % 60000) / 1000;
-        label3_Time.setText(String.format("%02d:%02d", min, sec));
-        if (isPlaying) label3_Time.setForeground(Color.GREEN);
-        else label3_Time.setForeground(currentTextColor);
+        
+        smartSetText(label3_Time, String.format("%02d:%02d", min, sec));
+        
+        Color timeColor = isTimerGreen ? Color.GREEN : currentTextColor;
+        if (label3_Time.getForeground() != timeColor) label3_Time.setForeground(timeColor);
 
         // 6. Details
+        updateDetailStats(r);
+    }
+
+	// 【新增】智能更新详情统计：只有内容变了才刷新，避免无意义的重绘消耗性能 , ver 2025-12-07
+    private void updateDetailStats(Round r) {
         java.util.List<DetailStatsPanel.TextSegment> segs = new java.util.ArrayList<>();
         Player me = r.getMe();
         if (me != null) {
@@ -4169,7 +4257,5 @@ class MiniStateWindow extends javax.swing.JWindow {
             }
         }
         label6_Detail.setContent(segs);
-        
-        repaint();
     }
 }
