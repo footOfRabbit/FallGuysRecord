@@ -18,3 +18,12 @@
 在小窗里加个刷视屏的浏览器内核，但是会影响性能，暂时无从下手
 
 2. 对于新增的自定义关卡进排位淘汰赛时的名称显示进行优化
+
+---
+## 使用说明
+1. 运行方式，双击run.bat
+2. 修改src/FallGuysRecord.java后重新封装jar包，双击build.bat
+3. 将项目封装成exe文件(无需java环境即可运行)，双击package_exe.bat
+    - 目前项目中少一个ico文件，要打包exe文件自己搞一个icon
+    - 当然也可以不要ico文件，到package_exe.bat里修改一下，把jpackage下面 --icon那行删了
+
